@@ -1,8 +1,9 @@
 --[[
-    Last updated: 2025-03-24 02:39:49 UTC
+    Last updated: 2025-03-23 19:13:16 UTC (modified 2025-03-24 22:45:00 UTC)
     Author: crimianity
-    
-    WeldModule for Item Grab System
+
+    WeldModule for Item Grab System with enhanced welding functionality.
+    Now it uses the "IsWelded" attribute on the model to determine and set the welded state.
 --]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -10,17 +11,16 @@ local ActionManager = require(game.ReplicatedStorage.ActionManager)
 
 local WeldModule = {}
 
-function WeldModule.new(humanoidRootPart) -- Add humanoidRootPart parameter
+function WeldModule.new(humanoidRootPart)
 	local module = {
 		touchingValidParts = {},
 		actionBound = false,
 		unweldActionBound = false,
 		heldModel = nil,
-		humanoidRootPart = humanoidRootPart -- Store humanoidRootPart
+		humanoidRootPart = humanoidRootPart
 	}
 
 	function module:isValidWeldTarget(part)
-		-- Check if part is not part of an _Item
 		local function isPartOfItem(testPart)
 			local model = testPart:FindFirstAncestorWhichIsA("Model")
 			return model and CollectionService:HasTag(model, "_Item")
@@ -28,7 +28,6 @@ function WeldModule.new(humanoidRootPart) -- Add humanoidRootPart parameter
 
 		if isPartOfItem(part) then return false end
 
-		-- Check if part is not part of a character/humanoid
 		local model = part:FindFirstAncestorOfClass("Model")
 		if model and model:FindFirstChild("Humanoid") then return false end
 
@@ -36,6 +35,11 @@ function WeldModule.new(humanoidRootPart) -- Add humanoidRootPart parameter
 	end
 
 	function module:isModelWelded(model)
+		-- Check using the IsWelded attribute.
+		if model:GetAttribute("IsWelded") then
+			return true
+		end
+		-- Fallback: check if any part has a weld.
 		for _, part in ipairs(model:GetDescendants()) do
 			if part:IsA("BasePart") and part:FindFirstChild("NewWeld") then
 				return true
@@ -45,19 +49,17 @@ function WeldModule.new(humanoidRootPart) -- Add humanoidRootPart parameter
 	end
 
 	function module:updateWeldActions(target, heldObject)
-		-- Update held model reference if provided
 		if heldObject then
 			self.heldModel = heldObject:FindFirstAncestorWhichIsA("Model")
 		else
 			self.heldModel = nil
 		end
 
-		-- Handle weld action visibility
 		local hasValidTouchingParts = next(self.touchingValidParts) ~= nil
 		local canWeld = hasValidTouchingParts and 
 			self.heldModel and 
 			CollectionService:HasTag(self.heldModel, "_Item") and 
-			not self:isModelWelded(self.heldModel)
+			(not self:isModelWelded(self.heldModel))
 
 		if canWeld and not self.actionBound then
 			ActionManager.bindAction(
@@ -77,13 +79,11 @@ function WeldModule.new(humanoidRootPart) -- Add humanoidRootPart parameter
 			self.actionBound = false
 		end
 
-		-- Handle unweld action visibility
 		local targetModel = target and target:FindFirstAncestorWhichIsA("Model")
 		local isWeldedItem = targetModel and 
 			CollectionService:HasTag(targetModel, "_Item") and 
 			self:isModelWelded(targetModel)
 
-		-- Check if the player is within 20 studs of the welded object
 		local isWithinRange = false
 		if targetModel and self.humanoidRootPart then
 			local distance = (self.humanoidRootPart.Position - targetModel:GetPivot().Position).Magnitude
@@ -139,42 +139,38 @@ function WeldModule.new(humanoidRootPart) -- Add humanoidRootPart parameter
 				weld.Part0 = part
 				weld.Part1 = touchingPart
 				weld.Parent = part
-
 				touchingPart.Anchored = true
 			end
 		end
 
 		table.clear(self.touchingValidParts)
 		self:updateWeldActions(nil, self.heldModel)
+		-- Mark the model as welded.
+		self.heldModel:SetAttribute("IsWelded", true)
 	end
 
 	function module:unweld(model)
 		local partsToUnanchor = {}
-
-		-- Collect all parts that need to be unanchored and remove welds
 		for _, part in ipairs(model:GetDescendants()) do
 			if part:IsA("BasePart") then
 				local weld = part:FindFirstChild("NewWeld")
 				if weld then
-					-- Add the welded part to our unanchor list
 					if weld.Part1 then
 						table.insert(partsToUnanchor, weld.Part1)
 					end
 					weld:Destroy()
 				end
-
-				-- Reset the part's properties to allow picking up
 				part.Anchored = false
 			end
 		end
 
-		-- Unanchor all the previously welded parts
 		for _, part in ipairs(partsToUnanchor) do
 			part.Anchored = false
 		end
 
-		-- Update actions after unwelding
-		self:updateWeldActions(model)
+		self:updateWeldActions(nil, model)
+		-- Mark the model as not welded.
+		model:SetAttribute("IsWelded", false)
 	end
 
 	function module:destroy()
