@@ -5,6 +5,7 @@
 local CollectionService = game:GetService("CollectionService")
 local RunService = game:GetService("RunService")
 local ActionManager = require(game.ReplicatedStorage.ActionManager)
+local Players = game:GetService("Players")
 
 local GrabModule = {}
 
@@ -46,6 +47,14 @@ function GrabModule.new(maxForce, maxRange, humanoidRootPart, isMobile)
 			local model = target:FindFirstAncestorWhichIsA("Model")
 			local distance = (self.humanoidRootPart.Position - target.Position).Magnitude
 			isValidTarget = model and CollectionService:HasTag(model, "_Item") and distance <= 20
+			-- Allow grab only if the HeldBy attribute is either nil or equal to the current player's UserId.
+			if isValidTarget then
+				local player = Players.LocalPlayer
+				local heldBy = model:GetAttribute("HeldBy")
+				if heldBy and heldBy ~= player.UserId then
+					isValidTarget = false
+				end
+			end
 		end
 
 		if isValidTarget and not self.actionBound then
@@ -67,6 +76,15 @@ function GrabModule.new(maxForce, maxRange, humanoidRootPart, isMobile)
 	function module:grab(target, humanoidRootPart)
 		if self.grabConnection then
 			self.grabConnection:Disconnect()
+		end
+
+		-- Prevent grabbing if another player is already holding this object.
+		local model = target:FindFirstAncestorWhichIsA("Model")
+		if model and CollectionService:HasTag(model, "_Item") then
+			if model:GetAttribute("HeldBy") and model:GetAttribute("HeldBy") ~= Players.LocalPlayer.UserId then
+				warn("Object is already held by another player.")
+				return
+			end
 		end
 
 		self.object = target
