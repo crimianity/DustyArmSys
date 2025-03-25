@@ -1,50 +1,94 @@
 --[[
-    Last updated: 2025-03-23 19:13:16 UTC (modified 2025-03-24 22:45:00 UTC)
+    Last updated: 2025-03-26
     Author: crimianity
 
-    WeldModule for Item Grab System with enhanced welding functionality.
-    Now it uses the "IsWelded" attribute on the model to determine and set the welded state.
+    Enhanced WeldModule with mobile support and better weld detection
 --]]
-
 local CollectionService = game:GetService("CollectionService")
+local UserInputService = game:GetService("UserInputService")
 local ActionManager = require(game.ReplicatedStorage.ActionManager)
 
 local WeldModule = {}
 
 function WeldModule.new(humanoidRootPart)
 	local module = {
-		touchingValidParts = {},
 		actionBound = false,
 		unweldActionBound = false,
 		heldModel = nil,
 		humanoidRootPart = humanoidRootPart
 	}
 
+	-- Returns true if the candidate part is valid for a weld constraint
 	function module:isValidWeldTarget(part)
-		local function isPartOfItem(testPart)
-			local model = testPart:FindFirstAncestorWhichIsA("Model")
-			return model and CollectionService:HasTag(model, "_Item")
+		if self.heldModel and part:IsDescendantOf(self.heldModel) then
+			return false
 		end
-
-		if isPartOfItem(part) then return false end
-
-		local model = part:FindFirstAncestorOfClass("Model")
-		if model and model:FindFirstChild("Humanoid") then return false end
-
+		local model = part:FindFirstAncestorWhichIsA("Model")
+		if model and CollectionService:HasTag(model, "_Item") then
+			return false
+		end
+		if model and model:FindFirstChild("Humanoid") then
+			return false
+		end
 		return true
 	end
 
 	function module:isModelWelded(model)
-		-- Check using the IsWelded attribute.
 		if model:GetAttribute("IsWelded") then
 			return true
 		end
-		-- Fallback: check if any part has a weld.
 		for _, part in ipairs(model:GetDescendants()) do
 			if part:IsA("BasePart") and part:FindFirstChild("NewWeld") then
 				return true
 			end
 		end
+		return false
+	end
+
+	-- Check if a model can be welded (has nearby valid parts or terrain)
+	function module:canWeldModel(model)
+		if not model or not CollectionService:HasTag(model, "_Item") or self:isModelWelded(model) then
+			return false
+		end
+
+		for _, part in ipairs(model:GetDescendants()) do
+			if part:IsA("BasePart") then
+				-- Check nearby parts
+				local nearbyParts = workspace:GetPartBoundsInRadius(part.Position, 1.5)
+				for _, candidate in ipairs(nearbyParts) do
+					if candidate and candidate ~= part and self:isValidWeldTarget(candidate) then
+						return true
+					end
+				end
+
+				-- Check terrain
+				local rayParams = RaycastParams.new()
+				rayParams.FilterDescendantsInstances = {workspace.Terrain}
+				rayParams.FilterType = Enum.RaycastFilterType.Include
+				local ray = workspace:Raycast(part.Position, Vector3.new(0, -1.5, 0), rayParams)
+				if ray then
+					return true
+				end
+			end
+		end
+		return false
+	end
+
+	-- Check if a model can be unwelded (is welded and in range)
+	function module:canUnweldModel(model)
+		if not model or not CollectionService:HasTag(model, "_Item") then
+			return false
+		end
+
+		if not self:isModelWelded(model) then
+			return false
+		end
+
+		if self.humanoidRootPart then
+			local distance = (self.humanoidRootPart.Position - model:GetPivot().Position).Magnitude
+			return distance <= 20
+		end
+
 		return false
 	end
 
@@ -55,12 +99,37 @@ function WeldModule.new(humanoidRootPart)
 			self.heldModel = nil
 		end
 
-		local hasValidTouchingParts = next(self.touchingValidParts) ~= nil
-		local canWeld = hasValidTouchingParts and 
-			self.heldModel and 
-			CollectionService:HasTag(self.heldModel, "_Item") and 
-			(not self:isModelWelded(self.heldModel))
+		-- Skip action binding if on mobile
+		if UserInputService.TouchEnabled then
+			return
+		end
 
+		-- Use GetPartBoundsInRadius() with a 1.5 stud radius for weld detection.
+		local validCandidate = false
+		if self.heldModel then
+			for _, part in ipairs(self.heldModel:GetDescendants()) do
+				if part:IsA("BasePart") then
+					local nearbyParts = workspace:GetPartBoundsInRadius(part.Position, 1.5)
+					for _, candidate in ipairs(nearbyParts) do
+						if candidate and candidate ~= part and self:isValidWeldTarget(candidate) then
+							validCandidate = true
+							break
+						end
+					end
+
+					local rayParams = RaycastParams.new()
+					rayParams.FilterDescendantsInstances = {workspace.Terrain}
+					rayParams.FilterType = Enum.RaycastFilterType.Include
+					local ray = workspace:Raycast(part.Position, Vector3.new(0, -1.5, 0), rayParams)
+					if ray then
+						validCandidate = true
+					end
+					if validCandidate then break end
+				end
+			end
+		end
+
+		local canWeld = validCandidate and self.heldModel and CollectionService:HasTag(self.heldModel, "_Item") and (not self:isModelWelded(self.heldModel))
 		if canWeld and not self.actionBound then
 			ActionManager.bindAction(
 				"Weld",
@@ -80,10 +149,7 @@ function WeldModule.new(humanoidRootPart)
 		end
 
 		local targetModel = target and target:FindFirstAncestorWhichIsA("Model")
-		local isWeldedItem = targetModel and 
-			CollectionService:HasTag(targetModel, "_Item") and 
-			self:isModelWelded(targetModel)
-
+		local isWeldedItem = targetModel and CollectionService:HasTag(targetModel, "_Item") and self:isModelWelded(targetModel)
 		local isWithinRange = false
 		if targetModel and self.humanoidRootPart then
 			local distance = (self.humanoidRootPart.Position - targetModel:GetPivot().Position).Magnitude
@@ -103,50 +169,44 @@ function WeldModule.new(humanoidRootPart)
 				3
 			)
 			self.unweldActionBound = true
-		elseif (not isWeldedItem or not isWithinRange) and self.unweldActionBound then
+		elseif ((not isWeldedItem) or (not isWithinRange)) and self.unweldActionBound then
 			ActionManager.unbindAction("Unweld")
 			self.unweldActionBound = false
-		end
-	end
-
-	function module:setupTouchConnections(model)
-		for _, part in ipairs(model:GetDescendants()) do
-			if part:IsA("BasePart") then
-				part.Touched:Connect(function(touchedPart)
-					if self:isValidWeldTarget(touchedPart) then
-						self.touchingValidParts[part] = touchedPart
-						self:updateWeldActions(nil, model)
-					end
-				end)
-
-				part.TouchEnded:Connect(function(touchedPart)
-					if self.touchingValidParts[part] == touchedPart then
-						self.touchingValidParts[part] = nil
-						self:updateWeldActions(nil, model)
-					end
-				end)
-			end
 		end
 	end
 
 	function module:weld()
 		if not self.heldModel then return end
 
-		for part, touchingPart in pairs(self.touchingValidParts) do
-			if part:IsDescendantOf(self.heldModel) then
-				local weld = Instance.new("WeldConstraint")
-				weld.Name = "NewWeld"
-				weld.Part0 = part
-				weld.Part1 = touchingPart
-				weld.Parent = part
-				touchingPart.Anchored = true
+		for _, part in ipairs(self.heldModel:GetDescendants()) do
+			if part:IsA("BasePart") then
+				local nearbyParts = workspace:GetPartBoundsInRadius(part.Position, 1.5)
+				for _, candidate in ipairs(nearbyParts) do
+					if candidate and not candidate:IsDescendantOf(self.heldModel) and self:isValidWeldTarget(candidate) then
+						local weld = Instance.new("WeldConstraint")
+						weld.Name = "NewWeld"
+						weld.Part0 = part
+						weld.Part1 = candidate
+						weld.Parent = part
+						candidate.Anchored = true
+					end
+				end
+
+				local rayParams = RaycastParams.new()
+				rayParams.FilterDescendantsInstances = {workspace.Terrain}
+				rayParams.FilterType = Enum.RaycastFilterType.Include
+				local ray = workspace:Raycast(part.Position, Vector3.new(0, -10, 0), rayParams)
+				if ray then
+					part.Anchored = true
+				end
 			end
 		end
 
-		table.clear(self.touchingValidParts)
-		self:updateWeldActions(nil, self.heldModel)
-		-- Mark the model as welded.
 		self.heldModel:SetAttribute("IsWelded", true)
+		if self.actionBound then
+			ActionManager.unbindAction("Weld")
+			self.actionBound = false
+		end
 	end
 
 	function module:unweld(model)
@@ -168,9 +228,8 @@ function WeldModule.new(humanoidRootPart)
 			part.Anchored = false
 		end
 
-		self:updateWeldActions(nil, model)
-		-- Mark the model as not welded.
 		model:SetAttribute("IsWelded", false)
+		self:updateWeldActions(nil, model)
 	end
 
 	function module:destroy()
@@ -180,7 +239,6 @@ function WeldModule.new(humanoidRootPart)
 		if self.unweldActionBound then
 			ActionManager.unbindAction("Unweld")
 		end
-		table.clear(self.touchingValidParts)
 	end
 
 	return module
