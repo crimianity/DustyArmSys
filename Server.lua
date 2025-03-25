@@ -2,19 +2,20 @@
     Last updated: 2025-03-23 19:13:16 UTC
     Author: crimianity
     
-    Server-side handling for Item Grab System with Welding functionality
+    Server-side handling for Item Grab System with Welding and Tool Equip functionality.
+    Handles normal grab/release, welding/unwelding, and now tool equipping, which deletes the _Tool model.
 --]]
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
 local CollectionService = game:GetService("CollectionService")
-local network          = script.Parent.Network
+local network           = script.Parent.Network
 
-local character        = script:FindFirstAncestorWhichIsA("Model")
-local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
-local humanoid         = character:WaitForChild("Humanoid")
-local player           = Players:GetPlayerFromCharacter(character)
-local currentObject    = nil
+local character         = script:FindFirstAncestorWhichIsA("Model")
+local humanoidRootPart  = character:WaitForChild("HumanoidRootPart")
+local humanoid          = character:WaitForChild("Humanoid")
+local player            = Players:GetPlayerFromCharacter(character)
+local currentObject     = nil
 
 local range = script.Parent.Range.Value
 
@@ -45,7 +46,7 @@ function canSetNetworkOwnership(part)
 end
 
 function isWithinRange(object)
-	return (object.Position - humanoidRootPart.Position).Magnitude < (range * 1.25 + 5)    
+	return (object.Position - humanoidRootPart.Position).Magnitude < ((range * 1.25) + 5)    
 end
 
 function handleWeldState(model, action)
@@ -58,7 +59,9 @@ function handleWeldState(model, action)
 		-- Reset network ownership for all parts
 		for _, part in ipairs(model:GetDescendants()) do
 			if part:IsA("BasePart") then
-				part:SetNetworkOwnershipAuto()
+				if part:IsDescendantOf(workspace) then
+					part:SetNetworkOwnershipAuto()
+				end
 			end
 		end
 	end
@@ -67,6 +70,15 @@ end
 local conn = network.OnServerEvent:Connect(function(firer, object, action)
 	if firer ~= player then return end
 
+	-- Handle tool equip request.
+	if action == "equipTool" then
+		if object and object:IsA("Model") then
+			-- Destroying the model on the server replicates the deletion to all clients.
+			object:Destroy()
+		end
+		return
+	end
+
 	if typeof(object) == "Instance" then
 		if action == "weld" or action == "unweld" then
 			-- Handle weld/unweld states
@@ -74,9 +86,11 @@ local conn = network.OnServerEvent:Connect(function(firer, object, action)
 				handleWeldState(object, action)
 			end
 		else
-			-- Handle normal grab/release
+			-- Handle normal grab/release.
 			if currentObject then
-				currentObject:SetNetworkOwnershipAuto()
+				if currentObject:IsDescendantOf(workspace) then
+					currentObject:SetNetworkOwnershipAuto()
+				end
 			end
 			currentObject = nil
 
@@ -89,8 +103,10 @@ local conn = network.OnServerEvent:Connect(function(firer, object, action)
 end)
 
 local dstCheck = RunService.Heartbeat:Connect(function()
-	if currentObject and ((not isWithinRange(currentObject)) or (not currentObject:IsDescendantOf(workspace))) then
-		currentObject:SetNetworkOwnershipAuto()
+	if currentObject and (not isWithinRange(currentObject) or (not currentObject:IsDescendantOf(workspace))) then
+		if currentObject:IsDescendantOf(workspace) then
+			currentObject:SetNetworkOwnershipAuto()
+		end
 		currentObject = nil
 	end
 end)
@@ -98,7 +114,7 @@ end)
 humanoid.Died:Connect(function()
 	conn:Disconnect()
 	dstCheck:Disconnect()
-	if currentObject then
+	if currentObject and currentObject:IsDescendantOf(workspace) then
 		currentObject:SetNetworkOwnershipAuto()
 	end
 end)
