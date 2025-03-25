@@ -8,7 +8,8 @@ local ActionManager = require(game.ReplicatedStorage.ActionManager)
 
 local GrabModule = {}
 
-function GrabModule.new(maxForce, maxRange, humanoidRootPart) -- Add humanoidRootPart as a parameter
+-- Added optional parameter "isMobile" (default false) to support mobile control flow.
+function GrabModule.new(maxForce, maxRange, humanoidRootPart, isMobile)
 	local module = {
 		object = nil,
 		distance = 0,
@@ -17,7 +18,8 @@ function GrabModule.new(maxForce, maxRange, humanoidRootPart) -- Add humanoidRoo
 		onGrabStarted = nil,
 		onGrabEnded = nil,
 		actionBound = false,
-		humanoidRootPart = humanoidRootPart -- Store humanoidRootPart in the module
+		humanoidRootPart = humanoidRootPart, -- Store humanoidRootPart in the module
+		isMobile = isMobile or false  -- flag indicating whether mobile control is active
 	}
 
 	local function grabActionHandler(action, inputState, inputObject)
@@ -33,7 +35,12 @@ function GrabModule.new(maxForce, maxRange, humanoidRootPart) -- Add humanoidRoo
 		end
 	end
 
+	-- In mobile mode we do not bind the computer grab action.
 	function module:updateGrabAction(target)
+		if self.isMobile then
+			return
+		end
+
 		local isValidTarget = false
 		if target and self.humanoidRootPart then -- Check if humanoidRootPart exists
 			local model = target:FindFirstAncestorWhichIsA("Model")
@@ -94,10 +101,11 @@ function GrabModule.new(maxForce, maxRange, humanoidRootPart) -- Add humanoidRoo
 		end
 	end
 
-	function module:updateGrabPosition(humanoidRootPart, mouse)
+	function module:updateGrabPosition(humanoidRootPart, inputSource)
+		-- inputSource is expected to have a Hit property with a Position field.
 		if self.object and self.grabForce then
-			-- Exactly match the original position calculation
-			local cf = CFrame.new(humanoidRootPart.Position, mouse.Hit.Position)
+			-- Exactly match the original position calculation.
+			local cf = CFrame.new(humanoidRootPart.Position, inputSource.Hit.Position)
 			self.grabForce.Position = cf.Position + cf.LookVector * self.distance
 		end
 	end
