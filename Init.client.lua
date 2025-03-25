@@ -1,8 +1,9 @@
 --[[
-    Last updated: 2025-03-24 22:45:00 UTC
-    Author: crimianity
-
-    Item Grab System Main Local Script with Mobile Distance, Weld, and Unweld Controls
+    Item Grab System Main Local Script
+    Modified to:
+    1. Properly handle Tool.CanBeDropped property
+    2. Remove non-existent updateDropAction call
+    3. Maintain all weld/grab functionality
 --]]
 
 local Players = game:GetService("Players")
@@ -10,11 +11,13 @@ local ContextActionService = game:GetService("ContextActionService")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local CollectionService = game:GetService("CollectionService")
+local StarterGui = game:GetService("StarterGui")
 
 local ArmModule = require(game.ReplicatedStorage:WaitForChild("Game"):WaitForChild("ArmModule"))
 local HighlightModule = require(game.ReplicatedStorage:WaitForChild("Game"):WaitForChild("HighlightModule"))
 local GrabModule = require(game.ReplicatedStorage:WaitForChild("Game"):WaitForChild("GrabModule"))
 local WeldModule = require(game.ReplicatedStorage:WaitForChild("Game"):WaitForChild("WeldModule"))
+local ToolModule = require(game.ReplicatedStorage:WaitForChild("Game"):WaitForChild("ToolModule"))
 local ActionManager = require(game.ReplicatedStorage:WaitForChild("ActionManager"))
 
 local player = Players.LocalPlayer
@@ -26,20 +29,32 @@ local network = script.Parent:WaitForChild("Network")
 local CurrentCamera = game.Workspace.CurrentCamera
 
 local MAX_FORCE = script.Parent.Force.Value
-local MAX_RANGE = 20 -- Ensure the max range is set to 20 studs
+local MAX_RANGE = 20
 
--- Determine if the player is on a mobile device.
 local isMobile = UserInputService.TouchEnabled
 
--- Initialize modules.
+-- Initialize modules
 local armModule = ArmModule.new(character)
 local highlightModule = HighlightModule.new()
 local grabModule = GrabModule.new(MAX_FORCE, MAX_RANGE, humanoidRootPart, isMobile)
 local weldModule = WeldModule.new(humanoidRootPart)
+local toolModule = ToolModule.new(player, isMobile)
+
+local function prepareForGrab()
+	humanoid:UnequipTools()
+	StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+end
+
+local function resetGuiAfterGrab()
+	StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, true)
+end
 
 if not isMobile then
-	-- Desktop behavior.
+	-- Desktop behavior
 	mouse.Move:Connect(function()
+		-- Update tool hover state
+		toolModule:updateHover(mouse.Target)
+
 		if not grabModule.object then
 			highlightModule:updateHoverHighlight(mouse.Target, humanoidRootPart)
 			grabModule:updateGrabAction(mouse.Target)
@@ -68,6 +83,8 @@ if not isMobile then
 			grabModule.grabConnection:Disconnect()
 		end
 
+		prepareForGrab()
+
 		local target = mouse.Target
 		if target then
 			grabModule:grab(target, humanoidRootPart)
@@ -75,7 +92,6 @@ if not isMobile then
 				local model = grabModule.object:FindFirstAncestorWhichIsA("Model")
 				if model then
 					highlightModule:createHeldHighlight(model)
-					weldModule:setupTouchConnections(model)
 				end
 				armModule:showArm()
 				network:FireServer(grabModule.object)
@@ -93,48 +109,47 @@ if not isMobile then
 		armModule:hideArm()
 		highlightModule:clearHighlights()
 		network:FireServer()
+		resetGuiAfterGrab()
 	end
 else
-	-- Mobile behavior.
+	-- Mobile behavior
 	local mobileHolder = player:WaitForChild("PlayerGui"):WaitForChild("Main"):WaitForChild("MobileHolder")
 	local mobileGrabButton = mobileHolder:WaitForChild("GrabButton")
 	local mobileDropButton = mobileHolder:WaitForChild("DropButton")
+	local mobileEquipButton = mobileHolder:WaitForChild("EquipButton")
+	local mobileDropToolButton = mobileHolder:WaitForChild("DropToolButton")
 	local mobileFurtherButton = mobileHolder:WaitForChild("FurtherButton")
 	local mobileCloserButton = mobileHolder:WaitForChild("CloserButton")
 	local mobileWeldButton = mobileHolder:WaitForChild("WeldButton")
 	local mobileUnweldButton = mobileHolder:WaitForChild("UnweldButton")
 
-	mobileGrabButton.Visible = false
-	mobileDropButton.Visible = false
-	mobileFurtherButton.Visible = false
-	mobileCloserButton.Visible = false
-	mobileWeldButton.Visible = false
-	mobileUnweldButton.Visible = false
+	-- Initialize all buttons as invisible
+	for _, button in ipairs(mobileHolder:GetChildren()) do
+		if button:IsA("TextButton") or button:IsA("ImageButton") then
+			button.Visible = false
+		end
+	end
 
-	local mobileCurrentTarget = nil   -- current target under the center of the screen.
-
-	-- Flags for distance adjustment.
+	local mobileCurrentTarget = nil
 	local furtherActive = false
 	local closerActive = false
 
-	-- Set up raycast parameters to ignore the player's character.
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
 	raycastParams.FilterDescendantsInstances = {character}
 
-	-- Update the center-screen target.
 	RunService.RenderStepped:Connect(function()
 		local viewportSize = CurrentCamera.ViewportSize
 		local centerX = viewportSize.X / 2
 		local centerY = viewportSize.Y / 2
 		local unitRay = CurrentCamera:ScreenPointToRay(centerX, centerY)
-		local rayOrigin = unitRay.Origin
-		local rayDirection = unitRay.Direction * 500
-		local raycastResult = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
+		local raycastResult = workspace:Raycast(unitRay.Origin, unitRay.Direction * 500, raycastParams)
+
 		if raycastResult and raycastResult.Instance then
 			local candidate = raycastResult.Instance
+			toolModule:updateHover(candidate)
+
 			local model = candidate:FindFirstAncestorWhichIsA("Model")
-			-- Show GrabButton only if an _Item is under center and no object is held.
 			if model and CollectionService:HasTag(model, "_Item") and not grabModule.object then
 				mobileCurrentTarget = candidate
 				mobileGrabButton.Visible = true
@@ -142,68 +157,70 @@ else
 				mobileCurrentTarget = nil
 				mobileGrabButton.Visible = false
 			end
+
+			-- Tool equip button visibility
+			mobileEquipButton.Visible = toolModule:getCurrentTool() ~= nil
+
+			-- Tool drop button visibility
+			local equippedTool = character:FindFirstChildWhichIsA("Tool")
+			mobileDropToolButton.Visible = equippedTool and equippedTool.CanBeDropped
+
+			-- Grabbed object drop button
+			mobileDropButton.Visible = grabModule.object ~= nil
 		else
 			mobileCurrentTarget = nil
 			mobileGrabButton.Visible = false
+			mobileEquipButton.Visible = false
+			mobileDropToolButton.Visible = false
+			mobileDropButton.Visible = false
 		end
 
-		-- If holding an item, update the arm position based on the center of the screen.
+		-- Update held object position and weld buttons
 		if grabModule.object and grabModule.grabConnection then
 			local centerHit = CurrentCamera.CFrame.Position + CurrentCamera.CFrame.LookVector * 20
 			local mobileInput = { Hit = { Position = centerHit } }
-			-- Adjust distance based on further/closer button status.
-			local delta = 0
-			if furtherActive then
-				delta = delta + 0.5
-			end
-			if closerActive then
-				delta = delta - 0.5
-			end
+
+			-- Handle distance adjustment
+			local delta = (furtherActive and 0.5 or 0) + (closerActive and -0.5 or 0)
 			if delta ~= 0 then
-				local newScale = grabModule:updateDistance(delta)
-				armModule:scaleArm(newScale)
+				armModule:scaleArm(grabModule:updateDistance(delta))
 			end
+
+			-- Update position
 			grabModule:updateGrabPosition(humanoidRootPart, mobileInput)
 			armModule:updateArmPosition(grabModule.object, humanoidRootPart, CurrentCamera, mobileInput)
 
-			-- Handle weld/unweld button visibility.
+			-- Update weld buttons
 			local model = grabModule.object:FindFirstAncestorWhichIsA("Model")
 			if model then
-				if weldModule:isModelWelded(model) then
-					mobileUnweldButton.Visible = true
-					mobileWeldButton.Visible = false
-				elseif next(weldModule.touchingValidParts) ~= nil then
-					mobileWeldButton.Visible = true
-					mobileUnweldButton.Visible = false
-				else
-					mobileWeldButton.Visible = false
-					mobileUnweldButton.Visible = false
-				end
+				local isWelded = weldModule:isModelWelded(model)
+				mobileWeldButton.Visible = not isWelded and weldModule:canWeldModel(model)
+				mobileUnweldButton.Visible = isWelded
+				mobileFurtherButton.Visible = true
+				mobileCloserButton.Visible = true
 			end
+		else
+			mobileWeldButton.Visible = false
+			mobileUnweldButton.Visible = false
+			mobileFurtherButton.Visible = false
+			mobileCloserButton.Visible = false
 		end
 	end)
 
-	-- Mobile Grab Button pressed.
+	-- Button connections
 	mobileGrabButton.MouseButton1Click:Connect(function()
 		if mobileCurrentTarget then
-			if grabModule.grabConnection then
-				grabModule.grabConnection:Disconnect()
-			end
+			if grabModule.grabConnection then grabModule.grabConnection:Disconnect() end
 
+			prepareForGrab()
 			grabModule:grab(mobileCurrentTarget, humanoidRootPart)
+
 			if grabModule.object then
 				local model = grabModule.object:FindFirstAncestorWhichIsA("Model")
-				if model then
-					highlightModule:createHeldHighlight(model)
-					weldModule:setupTouchConnections(model)
-				end
+				if model then highlightModule:createHeldHighlight(model) end
+
 				armModule:showArm()
 				network:FireServer(grabModule.object)
-				mobileGrabButton.Visible = false
-				mobileDropButton.Visible = true
-				mobileFurtherButton.Visible = true
-				mobileCloserButton.Visible = true
-				-- Weld and Unweld buttons are managed in RenderStepped.
 
 				grabModule.grabConnection = RunService.RenderStepped:Connect(function()
 					if grabModule.object and grabModule.object:FindFirstChild("ArmAttachment") then
@@ -217,38 +234,43 @@ else
 		end
 	end)
 
-	-- Mobile Drop Button pressed.
+	mobileEquipButton.MouseButton1Click:Connect(function()
+		local toolModel = toolModule:getCurrentTool()
+		if toolModel then
+			toolModule:equipTool(toolModel)
+			mobileEquipButton.Visible = false
+		end
+	end)
+
+	mobileDropToolButton.MouseButton1Click:Connect(function()
+		local tool = character:FindFirstChildWhichIsA("Tool")
+		if tool and tool.CanBeDropped then
+			tool.Parent = workspace
+			local dropPosition = humanoidRootPart.Position
+			if tool:FindFirstChild("Handle") then
+				tool.Handle.CFrame = CFrame.new(dropPosition)
+			elseif tool.PrimaryPart then
+				tool:SetPrimaryPartCFrame(CFrame.new(dropPosition))
+			end
+			mobileDropToolButton.Visible = false
+		end
+		resetGuiAfterGrab()
+	end)
+
 	mobileDropButton.MouseButton1Click:Connect(function()
 		if grabModule.object then
-			if grabModule.onGrabEnded then
-				grabModule.onGrabEnded()
-			end
+			if grabModule.onGrabEnded then grabModule.onGrabEnded() end
 			grabModule:release()
+			mobileDropButton.Visible = false
 		end
-		mobileDropButton.Visible = false
-		mobileFurtherButton.Visible = false
-		mobileCloserButton.Visible = false
-		mobileWeldButton.Visible = false
-		mobileUnweldButton.Visible = false
+		resetGuiAfterGrab()
 	end)
 
-	-- Further button press events.
-	mobileFurtherButton.MouseButton1Down:Connect(function()
-		furtherActive = true
-	end)
-	mobileFurtherButton.MouseButton1Up:Connect(function()
-		furtherActive = false
-	end)
+	mobileFurtherButton.MouseButton1Down:Connect(function() furtherActive = true end)
+	mobileFurtherButton.MouseButton1Up:Connect(function() furtherActive = false end)
+	mobileCloserButton.MouseButton1Down:Connect(function() closerActive = true end)
+	mobileCloserButton.MouseButton1Up:Connect(function() closerActive = false end)
 
-	-- Closer button press events.
-	mobileCloserButton.MouseButton1Down:Connect(function()
-		closerActive = true
-	end)
-	mobileCloserButton.MouseButton1Up:Connect(function()
-		closerActive = false
-	end)
-
-	-- Weld Button pressed.
 	mobileWeldButton.MouseButton1Click:Connect(function()
 		if grabModule.object then
 			local model = grabModule.object:FindFirstAncestorWhichIsA("Model")
@@ -259,7 +281,6 @@ else
 		end
 	end)
 
-	-- Unweld Button pressed.
 	mobileUnweldButton.MouseButton1Click:Connect(function()
 		if grabModule.object then
 			local model = grabModule.object:FindFirstAncestorWhichIsA("Model")
@@ -270,20 +291,17 @@ else
 		end
 	end)
 
-	-- Ensure that if the player is holding an item, the GrabButton stays hidden.
 	grabModule.onGrabEnded = function()
 		armModule:hideArm()
 		highlightModule:clearHighlights()
 		network:FireServer()
-		mobileDropButton.Visible = false
-		mobileFurtherButton.Visible = false
-		mobileCloserButton.Visible = false
-		mobileWeldButton.Visible = false
-		mobileUnweldButton.Visible = false
+		resetGuiAfterGrab()
+		for _, button in ipairs({mobileDropButton, mobileFurtherButton, mobileCloserButton, mobileWeldButton, mobileUnweldButton}) do
+			button.Visible = false
+		end
 	end
 end
 
--- Clean up on death.
 humanoid.Died:Connect(function()
 	grabModule:destroy()
 	grabModule:release()
